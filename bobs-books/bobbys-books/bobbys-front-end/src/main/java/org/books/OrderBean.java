@@ -64,8 +64,37 @@ public class OrderBean implements Serializable {
     private void placeOrderWithTracing(CartBean cartBean) {
         Span tracingSpan = buildSpan("OrderBean.order", servletRequest);
         Scope tracingScope = tracerPreprocessing(cartBean, tracingSpan);
-        String hostname = System.getenv("HELIDON_HOSTNAME");
-        String port = System.getenv("HELIDON_PORT");
+
+        String port = System.getenv("WEBLOGIC_PORT");
+        if (port == null) {
+            logger.info("WEBLOGIC_PORT is not defined. Set for default: 7001");
+            port = "7001";
+        }
+
+        //get the hostname
+        String hostname = System.getenv("WEBLOGIC_HOSTNAME");
+        if (hostname == null) {
+
+            logger.info("WEBLOGIC_HOSTNAME is not defined through 'env'");
+
+            hostname = System.getenv("HOSTNAME");
+            logger.info("WEBLOGIC_HOSTNAME is defined through 'env': " + hostname);
+        }
+        if (hostname == null) {
+            logger.info("HOSTNAME is not defined through 'env'");
+            try {
+                Scanner s = new Scanner(Runtime.getRuntime().exec("hostname").getInputStream());
+                hostname = s.hasNext() ? s.next() : "";
+                logger.info("HOSTNAME is defined through 'hostname' command: " + hostname);
+            } catch (IOException e) {
+                logger.error("The 'hostname' command is not available.");
+            }
+        }
+        if (hostname == null) {
+            logger.info("Couldn't get hostname, set for default: 127.0.0.1");
+            hostname = "127.0.0.1";
+        }
+
         JsonArrayBuilder jab = Json.createArrayBuilder();
         for (Book book : cartBean.getBooks()) {
             jab.add(Json.createObjectBuilder()
@@ -73,6 +102,7 @@ public class OrderBean implements Serializable {
                     .add("title", book.getTitle())
                     .build());
         }
+
         JsonObject jsonObject = Json.createObjectBuilder()
                 .add("customer", Json.createObjectBuilder()
                         .add("name", cartBean.getName())
@@ -88,17 +118,23 @@ public class OrderBean implements Serializable {
         // if this works then...
         //  https://opentracing.io/guides/java/inject-extract/ should be updated to add it to "one of the following for the Inject operation"
         // if this doesnt work then https://github.com/opentracing-contrib/java-jaxrs should be studied
-//  tracer().inject(tracer().activeSpan().context(), Builtin.HTTP_HEADERS, apacheHttpRequestBuilderCarrier(httpPost));
+        //  tracer().inject(tracer().activeSpan().context(), Builtin.HTTP_HEADERS, apacheHttpRequestBuilderCarrier(httpPost));
         javax.ws.rs.client.Client client = javax.ws.rs.client.ClientBuilder.newBuilder()
                 .register(ClientTracingFeature.class)
                 .build();
 
-        Response response = client.target(String.format("http://%s:%s/%s", hostname, port, "order"))
+        Response response = client.target(String.format("http://%s:%s/%s", hostname, port, "bobs-bookstore-order-manager/order"))
                 .request()
                 .header("Content-Type", "application/json")
                 .property(TracingProperties.CHILD_OF, tracer().activeSpan().context()) // optional, by default new parent is inferred from span source
                 .post(Entity.json(jsonObject));
         logger.info("[front end] order POST status : " + response.getStatus());
+
+        cartBean.setBooks(new ArrayList<Book>());
+        cartBean.setName("");
+        cartBean.setStreet("");
+        cartBean.setCity("");
+        cartBean.setState("");
         tracerPostprocessing(tracingScope);
     }
 

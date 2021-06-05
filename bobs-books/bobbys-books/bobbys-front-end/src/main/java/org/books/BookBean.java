@@ -26,13 +26,20 @@ import javax.json.Json;
 import javax.json.JsonObject;
 import javax.json.JsonReader;
 import javax.json.JsonString;
+import javax.naming.InitialContext;
 import javax.servlet.http.HttpServletRequest;
+import javax.sql.DataSource;
 
 import static org.books.utils.TracingUtils.*;
 
 import java.io.IOException;
 import java.io.Serializable;
 import java.io.StringReader;
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.ArrayList;
 
 @Named
 @SessionScoped
@@ -49,7 +56,7 @@ public class BookBean implements Serializable {
 
     public void find() {
 		Span tracingSpan = buildSpan("BookBean.find", servletRequest);
-		Scope scope = tracerPreprocessing(tracingSpan);
+		Scope tracingScope = tracerPreprocessing(tracingSpan);
 
 		logger.info("In find(), with bookId=" + bookId);
 
@@ -57,55 +64,47 @@ public class BookBean implements Serializable {
             bookId = "2";
         }
 
-        try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
+        try  {
+            InitialContext ctx = new InitialContext();
+            DataSource booksDS = (DataSource) ctx.lookup("jdbc/books");
 
-            String hostname = System.getenv("HELIDON_HOSTNAME");
-            String port = System.getenv("HELIDON_PORT");
+            String sql = "select book_id, authors, title, image_url from books where book_id = " + bookId;
 
-            HttpGet httpget = new HttpGet("http://" + hostname + ":" +
-                    port + "/books/" + bookId);
+            logger.info("Executing request " + sql);
 
-			logger.info("Executing request " + httpget.getRequestLine());
+            try (Connection connection = booksDS.getConnection();
+                 Statement statement = connection.createStatement();
 
-            // Create a custom response handler
-            ResponseHandler<String> responseHandler = new ResponseHandler<String>() {
+                 ResultSet resultSet =
+                         statement.executeQuery(sql);) {
+                tracingScope = startTracing(tracingSpan, connection);
 
-                @Override
-                public String handleResponse(
-                        final HttpResponse response) throws ClientProtocolException, IOException {
-                    int status = response.getStatusLine().getStatusCode();
-                    if (status >= 200 && status < 300) {
-                        HttpEntity entity = response.getEntity();
-                        return entity != null ? EntityUtils.toString(entity) : null;
-                    } else {
-                        throw new ClientProtocolException("Unexpected response status: " + status);
-                    }
+                while (resultSet.next()) {
+
+
+
+                    book = new Book();
+                    book.setBookId(resultSet.getString("book_id"));
+                    book.setAuthors(resultSet.getString("authors"));
+                    book.setTitle(resultSet.getString("title"));
+                    book.setImageUrl(resultSet.getString("image_url"));
+
+
                 }
+            }
 
-            };
-			tracer().inject(tracer().activeSpan().context(), Builtin.HTTP_HEADERS,
-					apacheHttpRequestBuilderCarrier(httpget));
-            String responseBody = httpClient.execute(httpget, responseHandler);
-			// logger.info("raw response body " + responseBody);
 
-            JsonReader reader = Json.createReader(new StringReader(responseBody));
-            JsonObject jbook = reader.readObject();
-			// logger.info("after json reader " + jbook.toString());
 
-            book = new Book();
-            book.setBookId(bookId);
-            book.setAuthors(((JsonString) jbook.get("authors")).getString());
-            book.setTitle(((JsonString) jbook.get("title")).getString());
-            book.setImageUrl(((JsonString) jbook.get("imageUrl")).getString());
         } catch (Exception e) {
-			logger.error("Error fetching book\n", e);
-		}
-		if (book != null) {
+            logger.error("Error fetching books\n", e);
+        }
+
+        if (book != null) {
 			tracer().activeSpan().log(String.format("Found book: %s", book.toString()));
 		}
 
 		logger.info("Got book:" + book.toString());
-		finishTrace(scope);
+		finishTrace(tracingScope);
     }
 
 	private Scope tracerPreprocessing(Span tracingSpan) {
@@ -113,6 +112,12 @@ public class BookBean implements Serializable {
 		return activateSpan(tracingSpan);
 
 	}
+
+    private Scope startTracing(Span tracingSpan, Connection connection) throws SQLException {
+        tracingSpan.setTag("TimeSpentInDBOperationFor_" + connection, "TODO");
+        tracingSpan.setBaggageItem("DatabaseProductName", connection.getMetaData().getDatabaseProductName());
+        return activateSpan(tracingSpan);
+    }
 
 	public String getTitle() {
         return book.getTitle();

@@ -1,0 +1,11 @@
+#
+# Usage: docker build --tag demo-mysql . -f Dockerfile.mySQL
+#
+FROM mysql:latest
+
+# needed for intialization
+ENV MYSQL_ROOT_PASSWORD=mypassword
+
+ADD setup.sql /docker-entrypoint-initdb.d
+
+EXPOSE 3306
